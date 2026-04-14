@@ -35,6 +35,7 @@ if (bingoConfig.entries.length < REQUIRED_ENTRY_COUNT) {
 }
 
 const todayKey = getDateKey(new Date());
+const displayDate = formatDateForDisplay(todayKey);
 
 app.innerHTML = `
   <main class="shell">
@@ -56,7 +57,7 @@ app.innerHTML = `
         </label>
         <div class="control-card control-card--date">
           <span class="label">Today's seed date</span>
-          <strong id="date-label">${todayKey}</strong>
+          <strong id="date-label">${displayDate}</strong>
           <span class="muted">Same text + same day = same card.</span>
         </div>
         <div class="actions">
@@ -116,9 +117,12 @@ if (
   throw new Error("Missing required DOM elements.");
 }
 
-dateLabel.textContent = todayKey;
+dateLabel.textContent = displayDate;
+applyTheme(getPreferredTheme());
 
 let currentState: BingoState | null = null;
+let resizeFrame = 0;
+const themeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -146,6 +150,12 @@ clearProgressButton.addEventListener("click", () => {
   persistSelections(currentState);
   renderState();
 });
+
+themeMediaQuery.addEventListener("change", (event) => {
+  applyTheme(event.matches ? "dark" : "light");
+});
+
+window.addEventListener("resize", scheduleBoardSizing);
 
 const rememberedName = loadLastName();
 
@@ -195,7 +205,7 @@ function renderState(): void {
 
   const summary = getBingoSummary(currentState.entries, currentState.selectedIds);
 
-  cardTitle.textContent = `${currentState.rawName || currentState.normalizedName} • ${currentState.dateKey}`;
+  cardTitle.textContent = `${currentState.rawName || currentState.normalizedName} • ${formatDateForDisplay(currentState.dateKey)}`;
   helperText.textContent =
     "Click a field to mark it. Progress stays saved locally for this exact name and date.";
   markedCount.textContent = `${currentState.selectedIds.size} / ${REQUIRED_ENTRY_COUNT}`;
@@ -203,7 +213,7 @@ function renderState(): void {
 
   board.innerHTML = "";
 
-  currentState.entries.forEach((entry, index) => {
+  currentState.entries.forEach((entry) => {
     const isSelected = currentState.selectedIds.has(entry.id);
     const isWinning = summary.winningIds.has(entry.id);
     const cell = document.createElement("button");
@@ -222,7 +232,6 @@ function renderState(): void {
     }
 
     cell.innerHTML = `
-      <span class="cell-index">Field ${index + 1}</span>
       <span class="cell-text">${escapeHtml(entry.text)}</span>
     `;
 
@@ -243,6 +252,8 @@ function renderState(): void {
 
     board.appendChild(cell);
   });
+
+  scheduleBoardSizing();
 }
 
 function renderEmptyState(message: string): void {
@@ -256,6 +267,61 @@ function renderEmptyState(message: string): void {
       <p>Today's card appears here after you enter a name or string.</p>
     </div>
   `;
+
+  scheduleBoardSizing();
+}
+
+function scheduleBoardSizing(): void {
+  if (resizeFrame !== 0) {
+    cancelAnimationFrame(resizeFrame);
+  }
+
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = 0;
+    updateBoardSizing();
+  });
+}
+
+function updateBoardSizing(): void {
+  const isBoardVisible = board.children.length > 0 && !board.querySelector(".empty-state");
+
+  if (!isBoardVisible) {
+    board.style.removeProperty("--board-size");
+    board.style.removeProperty("--cell-font-size");
+    return;
+  }
+
+  const viewportHeight = window.innerHeight;
+  const parentWidth = board.parentElement?.clientWidth ?? board.clientWidth ?? window.innerWidth;
+  const horizontalPadding = window.innerWidth <= 820 ? 0 : 8;
+  const availableWidth = Math.floor(parentWidth - horizontalPadding);
+  const preferredHeight = Math.floor(
+    viewportHeight * (window.innerWidth <= 820 ? 0.56 : 0.72),
+  );
+  const maxBoardSize = window.innerWidth <= 820 ? availableWidth : 820;
+
+  if (availableWidth <= 0) {
+    board.style.removeProperty("--board-size");
+    board.style.removeProperty("--cell-font-size");
+    return;
+  }
+
+  const boardSize = Math.min(availableWidth, preferredHeight, maxBoardSize);
+  const cellFontSize = Math.max(12, Math.min(18, Math.floor(boardSize / 13)));
+
+  board.style.setProperty("--board-size", `${boardSize}px`);
+  board.style.setProperty("--cell-font-size", `${cellFontSize}px`);
+}
+
+function getPreferredTheme(): "light" | "dark" {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+function applyTheme(theme: "light" | "dark"): void {
+  document.documentElement.dataset.theme = theme;
+  document.body.dataset.theme = theme;
 }
 
 function getBingoSummary(
@@ -377,6 +443,16 @@ function getDateKey(date: Date): string {
   const day = String(date.getDate()).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
+}
+
+function formatDateForDisplay(dateKey: string): string {
+  const [year, month, day] = dateKey.split("-");
+
+  if (!year || !month || !day) {
+    return dateKey;
+  }
+
+  return `${day}-${month}-${year}`;
 }
 
 function hashString(value: string): number {
