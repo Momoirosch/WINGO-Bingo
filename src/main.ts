@@ -307,7 +307,10 @@ function updateBoardSizing(): void {
   }
 
   const boardSize = Math.min(availableWidth, preferredHeight, maxBoardSize);
-  const cellFontSize = Math.max(12, Math.min(18, Math.floor(boardSize / 13)));
+  const cellFontSize =
+    window.innerWidth <= 820
+      ? Math.max(9, Math.min(13, Math.floor(boardSize / 19)))
+      : Math.max(12, Math.min(18, Math.floor(boardSize / 13)));
 
   board.style.setProperty("--board-size", `${boardSize}px`);
   board.style.setProperty("--cell-font-size", `${cellFontSize}px`);
