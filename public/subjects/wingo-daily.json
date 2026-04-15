@@ -1,6 +1,7 @@
 {
   "title": "WINGO Bingo",
-  "subtitle": "A deterministic daily bingo board for the class",
+  "subtitle": "A deterministic weekly bingo board for the class",
+  "cadence": "weekly",
   "cardSize": 4,
   "entries": [
     "Evian Wasser",

@@ -1,22 +1,92 @@
 # WINGO-Bingo
 
-A small GitHub Pages bingo app that creates the same 4x4 card for the same
-name/string on the same day.
+A small GitHub Pages bingo app that discovers its subjects from JSON files.
+Each subject can choose:
+
+- `daily` or `weekly`
+- `3x3` or `4x4`
+- its own entry list
+- an optional color theme
 
 ## How it works
 
 - Enter any name or string.
-- The app combines that value with the local date in `YYYY-MM-DD` format.
-- A deterministic shuffle picks 16 prompts from the field list.
-- Clicking fields marks progress and is saved locally in the browser for that
-  specific name and day.
+- Pick a subject at the top of the page.
+- The app combines that value with the current day or ISO week, depending on the subject.
+- A deterministic shuffle picks the required number of prompts from that subject's card list.
+- Clicking fields marks progress and saves it locally in the browser for that exact subject, name, and day or week.
 
-## Field data
+## Adding a new bingo subject
 
-The bingo prompts live in `src/bingo-fields.json`.
+Drop a new JSON file into `public/subjects/`.
 
-This replaces the original plain-text `bingoFileds.txt` format so it is easier
-to extend later.
+Example:
+
+```json
+{
+  "title": "Databases Bingo",
+  "subtitle": "Weekly database chaos",
+  "cadence": "weekly",
+  "cardSize": 3,
+  "entries": [
+    "Deadlock mentioned",
+    "Migration issue",
+    "Someone says ACID",
+    "N+1 query",
+    "Schema drift",
+    "Index forgotten",
+    "Backup panic",
+    "Slow query screenshot",
+    "Connection pool drama"
+  ],
+  "theme": {
+    "light": {
+      "primary": "#7c3aed",
+      "accent": "#ea580c"
+    },
+    "dark": {
+      "primary": "#a78bfa",
+      "accent": "#fb923c"
+    }
+  }
+}
+```
+
+Required fields:
+
+- `title`
+- `cadence`: `daily` or `weekly`
+- `cardSize`: `3` or `4`
+- `entries`: at least `9` entries for `3x3`, or `16` for `4x4`
+
+Optional fields:
+
+- `subtitle`
+- `theme.light`
+- `theme.dark`
+
+Theme values are partial overrides, so you only need to provide the colors you want to change.
+Supported theme keys are:
+
+- `bg`
+- `bgAccent`
+- `panel`
+- `panelStrong`
+- `text`
+- `muted`
+- `primary`
+- `primaryStrong`
+- `accent`
+- `border`
+- `shadow`
+- `selectedBorder`
+- `selectedTop`
+- `selectedBottom`
+- `winningBorder`
+- `winningTop`
+- `winningBottom`
+
+The build step automatically creates the subject index, so you do not need to maintain a manifest by hand.
 
 ## Local commands
 
@@ -30,9 +100,10 @@ The production site is generated into `dist/`.
 
 To test locally:
 
-1. Run `bun run build`
-2. Run `bun run preview`
-3. Open `http://localhost:4173`
+1. Run `bun run check`
+2. Run `bun run build`
+3. Run `bun run preview`
+4. Open `http://localhost:4173`
 
 ## GitHub Pages
 

@@ -1,30 +1,23 @@
-import bingoConfig from "../src/bingo-fields.json";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 
-const { cardSize, entries } = bingoConfig;
-const expectedEntries = cardSize * cardSize;
+import { validateSubjectConfig } from "../src/subject-schema";
 
-if (!Number.isInteger(cardSize) || cardSize <= 0) {
-  throw new Error("`cardSize` must be a positive integer.");
+const subjectsDir = "public/subjects";
+const fileNames = (await readdir(subjectsDir))
+  .filter((fileName) => fileName.endsWith(".json") && fileName !== "index.json")
+  .sort((left, right) => left.localeCompare(right));
+
+if (fileNames.length === 0) {
+  throw new Error(`No subject JSON files found in "${subjectsDir}".`);
 }
 
-if (!Array.isArray(entries)) {
-  throw new Error("`entries` must be an array.");
-}
+for (const fileName of fileNames) {
+  const filePath = join(subjectsDir, fileName);
+  const config = await Bun.file(filePath).json();
 
-if (entries.length < expectedEntries) {
-  throw new Error(
-    `Need at least ${expectedEntries} bingo entries for a ${cardSize}x${cardSize} card.`,
+  validateSubjectConfig(config, `Subject file "${fileName}"`);
+  console.log(
+    `Validated "${config.title}" from ${fileName} (${config.cadence}, ${config.cardSize}x${config.cardSize}, ${config.entries.length} entries).`,
   );
 }
-
-const emptyEntries = entries.filter(
-  (entry) => typeof entry !== "string" || entry.trim().length === 0,
-);
-
-if (emptyEntries.length > 0) {
-  throw new Error("All bingo entries must be non-empty strings.");
-}
-
-console.log(
-  `Validated ${entries.length} bingo entries for a ${cardSize}x${cardSize} card.`,
-);

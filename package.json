@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "bun run scripts/dev.ts",
     "build": "bun run scripts/build.ts",
     "check": "bun run scripts/check.ts",
     "preview": "bun run scripts/preview.ts"

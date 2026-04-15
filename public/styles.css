@@ -112,6 +112,21 @@ body::before {
   overflow: hidden;
 }
 
+.hero-topline {
+  position: relative;
+  z-index: 1;
+}
+
+.subject-meta {
+  margin: 0.75rem 0 0;
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  position: relative;
+}
+
 .hero::after {
   content: "";
   position: absolute;
@@ -162,6 +177,63 @@ h1 {
   color: var(--muted);
 }
 
+.subject-switch {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  position: relative;
+  z-index: 1;
+}
+
+.subject-pill {
+  appearance: none;
+  border: 0;
+  border-radius: 20px;
+  padding: 0.75rem 0.9rem;
+  min-width: min(220px, 100%);
+  font: inherit;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel-strong) 86%, white 14%);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.18rem;
+  text-align: left;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.subject-pill:hover {
+  color: var(--text);
+}
+
+.subject-pill.is-active {
+  color: white;
+  background: linear-gradient(135deg, var(--primary), #15968d);
+  box-shadow: 0 12px 28px rgba(15, 118, 110, 0.22);
+  border-color: transparent;
+}
+
+.subject-pill__title {
+  font-weight: 700;
+  font-size: 0.98rem;
+}
+
+.subject-pill__meta {
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
 .controls {
   margin-top: 1.2rem;
   display: grid;
@@ -200,6 +272,7 @@ h1 {
 }
 
 .control-card input:focus-visible,
+.subject-pill:focus-visible,
 .button:focus-visible,
 .cell:focus-visible {
   outline: 3px solid rgba(15, 118, 110, 0.32);
@@ -295,8 +368,8 @@ h1 {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--board-columns, 4), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--board-columns, 4), minmax(0, 1fr));
   gap: 0.6rem;
   width: min(100%, var(--board-size, 100%));
   height: min(100%, var(--board-size, 100%));
@@ -383,6 +456,15 @@ h1 {
     display: grid;
   }
 
+  .subject-switch {
+    gap: 0.5rem;
+  }
+
+  .subject-pill {
+    flex: 1 1 0;
+    min-width: calc(50% - 0.25rem);
+  }
+
   h1 {
     font-size: clamp(2rem, 15vw, 3.2rem);
     max-width: 8ch;
@@ -449,8 +531,6 @@ h1 {
   }
 
   .board {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: repeat(4, minmax(0, 1fr));
     gap: 0.3rem;
   }
 
@@ -485,6 +565,10 @@ h1 {
 
   .intro {
     font-size: 0.84rem;
+  }
+
+  .subject-pill {
+    min-width: 100%;
   }
 
   .board-header h2 {
