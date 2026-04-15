@@ -52,6 +52,8 @@ type UiRefs = {
   bingoCount: HTMLElement;
   board: HTMLDivElement;
   clearProgressButton: HTMLButtonElement;
+  downloadImageButton: HTMLButtonElement;
+  copyImageButton: HTMLButtonElement;
   subjectButtons: HTMLButtonElement[];
 };
 
@@ -278,6 +280,8 @@ function renderShell(): void {
           <div class="actions">
             <button class="button button--primary" type="submit">Generate card</button>
             <button class="button button--ghost" id="clear-progress" type="button">Clear progress</button>
+            <button class="button button--ghost" id="download-image" type="button">Download image</button>
+            <button class="button button--ghost" id="copy-image" type="button">Copy image</button>
           </div>
         </form>
       </section>
@@ -322,6 +326,10 @@ function getUiRefs(): UiRefs {
   const board = document.querySelector<HTMLDivElement>("#board");
   const clearProgressButton =
     document.querySelector<HTMLButtonElement>("#clear-progress");
+  const downloadImageButton =
+    document.querySelector<HTMLButtonElement>("#download-image");
+  const copyImageButton =
+    document.querySelector<HTMLButtonElement>("#copy-image");
   const subjectButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>("[data-subject-id]"),
   );
@@ -340,7 +348,9 @@ function getUiRefs(): UiRefs {
     !markedCount ||
     !bingoCount ||
     !board ||
-    !clearProgressButton
+    !clearProgressButton ||
+    !downloadImageButton ||
+    !copyImageButton
   ) {
     throw new Error("Missing required DOM elements.");
   }
@@ -360,6 +370,8 @@ function getUiRefs(): UiRefs {
     bingoCount,
     board,
     clearProgressButton,
+    downloadImageButton,
+    copyImageButton,
     subjectButtons,
   };
 }
@@ -393,6 +405,14 @@ function wireEvents(): void {
     currentState.selectedIds.clear();
     persistSelections(currentState);
     renderState();
+  });
+
+  ui.downloadImageButton.addEventListener("click", () => {
+    void handleDownloadImage();
+  });
+
+  ui.copyImageButton.addEventListener("click", () => {
+    void handleCopyImage();
   });
 
   ui.subjectButtons.forEach((button) => {
@@ -462,6 +482,7 @@ function syncSubjectUi(): void {
   ui.helperText.textContent = getProgressMessage(subject.config);
   ui.markedCount.textContent = `0 / ${getRequiredEntryCount(subject.config)}`;
   ui.board.style.setProperty("--board-columns", String(subject.config.cardSize));
+  updateExportButtonState();
 
   ui.subjectButtons.forEach((button) => {
     const isActive = button.dataset.subjectId === subject.id;
@@ -540,6 +561,7 @@ function renderState(): void {
   ui.bingoCount.textContent = `${summary.count}`;
   ui.board.style.setProperty("--board-columns", String(subject.config.cardSize));
   ui.board.innerHTML = "";
+  updateExportButtonState();
 
   currentState.entries.forEach((entry) => {
     const isSelected = currentState?.selectedIds.has(entry.id) ?? false;
@@ -594,6 +616,7 @@ function renderEmptyState(message: string): void {
   ui.cardTitle.textContent = "Enter a name to start";
   ui.helperText.textContent = message;
   ui.bingoCount.textContent = "0";
+  updateExportButtonState();
   ui.board.innerHTML = `
     <div class="empty-state">
       <p>Your bingo board appears here after you enter a name or string.</p>
@@ -691,6 +714,516 @@ function applySubjectTheme(theme: SubjectTheme | undefined, mode: ThemeMode): vo
     }
   }
 }
+
+function updateExportButtonState(): void {
+  if (!ui) {
+    return;
+  }
+
+  const hasCard = currentState !== null;
+
+  ui.downloadImageButton.disabled = !hasCard;
+  ui.copyImageButton.disabled = !hasCard || !supportsClipboardImageCopy();
+}
+
+async function handleDownloadImage(): Promise<void> {
+  const exportAsset = await buildExportAsset();
+
+  if (!exportAsset) {
+    return;
+  }
+
+  downloadBlob(exportAsset.blob, exportAsset.filename);
+}
+
+async function handleCopyImage(): Promise<void> {
+  if (!ui || !supportsClipboardImageCopy()) {
+    return;
+  }
+
+  const exportAsset = await buildExportAsset();
+
+  if (!exportAsset) {
+    return;
+  }
+
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "image/png": exportAsset.blob,
+      }),
+    ]);
+    flashButtonLabel(ui.copyImageButton, "Copied!");
+  } catch {
+    flashButtonLabel(ui.copyImageButton, "Copy failed");
+  }
+}
+
+async function buildExportAsset(): Promise<{ blob: Blob; filename: string } | null> {
+  if (!currentState) {
+    return null;
+  }
+
+  const subject = subjectMap.get(currentState.subjectId);
+
+  if (!subject) {
+    return null;
+  }
+
+  const summary = getBingoSummary(
+    currentState.entries,
+    currentState.selectedIds,
+    subject.config.cardSize,
+  );
+  const blob = await createExportImage(currentState, subject, summary);
+  const filename = `${slugify(subject.config.title)}-${slugify(
+    currentState.rawName || currentState.normalizedName || "card",
+  )}-${currentState.periodKey}.png`;
+
+  return { blob, filename };
+}
+
+async function createExportImage(
+  state: BingoState,
+  subject: SubjectRecord,
+  summary: BingoSummary,
+): Promise<Blob> {
+  const cardSize = subject.config.cardSize;
+  const boardPixels = cardSize === 3 ? 1040 : 1120;
+  const canvas = document.createElement("canvas");
+  const width = 1400;
+  const height = 1720;
+  const padding = 72;
+  const boardX = Math.round((width - boardPixels) / 2);
+  const boardY = 470;
+  const gap = 20;
+  const cellSize = Math.floor((boardPixels - gap * (cardSize - 1)) / cardSize);
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is not available.");
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const colors = getResolvedThemeColors();
+
+  drawBackground(ctx, width, height, colors);
+  drawPanel(ctx, 44, 36, width - 88, height - 72, 30, colors.panel, colors.shadow);
+
+  ctx.fillStyle = colors.accent;
+  ctx.font = "700 22px 'Avenir Next', 'Segoe UI', sans-serif";
+  ctx.fillText("GitHub Pages Bingo", padding, 96);
+
+  ctx.fillStyle = colors.text;
+  ctx.font = "700 62px Georgia, 'Times New Roman', serif";
+  drawSingleLineText(ctx, subject.config.title, padding, 166, width - padding * 2);
+
+  ctx.fillStyle = colors.muted;
+  ctx.font = "500 28px 'Avenir Next', 'Segoe UI', sans-serif";
+  drawWrappedText(
+    ctx,
+    `${getSubtitle(subject.config)}\n${currentStateLabel(state, subject)}`,
+    padding,
+    222,
+    width - padding * 2,
+    38,
+    3,
+  );
+
+  drawStatPill(ctx, padding, 308, 290, 92, "Marked fields", `${state.selectedIds.size} / ${getRequiredEntryCount(subject.config)}`, colors);
+  drawStatPill(ctx, padding + 314, 308, 190, 92, "Bingos", `${summary.count}`, colors);
+  drawStatPill(
+    ctx,
+    width - padding - 304,
+    308,
+    304,
+    92,
+    "Cadence / size",
+    formatSubjectMeta(subject.config),
+    colors,
+  );
+
+  for (let index = 0; index < state.entries.length; index += 1) {
+    const entry = state.entries[index];
+    const row = Math.floor(index / cardSize);
+    const column = index % cardSize;
+    const x = boardX + column * (cellSize + gap);
+    const y = boardY + row * (cellSize + gap);
+    const isSelected = state.selectedIds.has(entry.id);
+    const isWinning = summary.winningIds.has(entry.id);
+    const fill = isWinning
+      ? colors.winningTop
+      : isSelected
+        ? colors.selectedTop
+        : colors.panelStrong;
+    const border = isWinning
+      ? colors.winningBorder
+      : isSelected
+        ? colors.selectedBorder
+        : colors.border;
+
+    drawRoundedRect(ctx, x, y, cellSize, cellSize, 24, fill, border, 3);
+    drawCellText(
+      ctx,
+      entry.text,
+      x + 20,
+      y + 28,
+      cellSize - 40,
+      cellSize - 56,
+      cardSize,
+      colors.text,
+    );
+  }
+
+  ctx.fillStyle = colors.muted;
+  ctx.font = "500 22px 'Avenir Next', 'Segoe UI', sans-serif";
+  ctx.fillText("Generated from the current bingo card state", padding, height - 70);
+
+  return canvasToBlob(canvas);
+}
+
+function drawBackground(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  colors: ResolvedThemeColors,
+): void {
+  ctx.fillStyle = colors.bg;
+  ctx.fillRect(0, 0, width, height);
+
+  const topLeft = ctx.createRadialGradient(210, 140, 20, 210, 140, 320);
+  topLeft.addColorStop(0, colors.bgAccent);
+  topLeft.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = topLeft;
+  ctx.fillRect(0, 0, width, height);
+
+  const topRight = ctx.createRadialGradient(width - 180, 180, 20, width - 180, 180, 260);
+  topRight.addColorStop(0, colors.accentSoft);
+  topRight.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = topRight;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function drawPanel(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  fill: string,
+  shadow: string,
+): void {
+  ctx.save();
+  ctx.shadowColor = shadow;
+  ctx.shadowBlur = 30;
+  ctx.shadowOffsetY = 10;
+  drawRoundedRect(ctx, x, y, width, height, radius, fill);
+  ctx.restore();
+}
+
+function drawStatPill(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  label: string,
+  value: string,
+  colors: ResolvedThemeColors,
+): void {
+  drawRoundedRect(ctx, x, y, width, height, 22, colors.panelStrong, colors.border, 2);
+  ctx.fillStyle = colors.muted;
+  ctx.font = "700 16px 'Avenir Next', 'Segoe UI', sans-serif";
+  ctx.fillText(label.toUpperCase(), x + 24, y + 30);
+  ctx.fillStyle = colors.text;
+  ctx.font = "700 34px Georgia, 'Times New Roman', serif";
+  drawSingleLineText(ctx, value, x + 24, y + 70, width - 48);
+}
+
+function drawCellText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  maxHeight: number,
+  cardSize: number,
+  color: string,
+): void {
+  const fontSize = cardSize === 3 ? 36 : 28;
+  const lineHeight = cardSize === 3 ? 42 : 34;
+  const maxLines = Math.max(3, Math.floor(maxHeight / lineHeight));
+
+  ctx.fillStyle = color;
+  ctx.font = `600 ${fontSize}px 'Avenir Next', 'Segoe UI', sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+
+  const lines = wrapText(ctx, text, maxWidth, maxLines);
+  const totalHeight = lines.length * lineHeight;
+  const startY = y + Math.max(0, (maxHeight - totalHeight) / 2);
+
+  lines.forEach((line, index) => {
+    ctx.fillText(line, x + maxWidth / 2, startY + index * lineHeight);
+  });
+
+  ctx.textAlign = "start";
+}
+
+function drawWrappedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number,
+): void {
+  const allLines = text
+    .split("\n")
+    .flatMap((line) => wrapText(ctx, line, maxWidth, maxLines))
+    .slice(0, maxLines);
+
+  allLines.forEach((line, index) => {
+    ctx.fillText(line, x, y + index * lineHeight);
+  });
+}
+
+function drawSingleLineText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+): void {
+  const lines = wrapText(ctx, text, maxWidth, 1);
+  ctx.fillText(lines[0] ?? text, x, y);
+}
+
+function wrapText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+
+  if (words.length === 0) {
+    return [""];
+  }
+
+  const lines: string[] = [];
+  let currentLine = words[0] ?? "";
+
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    const nextLine = `${currentLine} ${word}`;
+
+    if (ctx.measureText(nextLine).width <= maxWidth) {
+      currentLine = nextLine;
+      continue;
+    }
+
+    lines.push(currentLine);
+    currentLine = word;
+
+    if (lines.length === maxLines - 1) {
+      break;
+    }
+  }
+
+  const consumedWords = lines.join(" ").split(/\s+/).filter(Boolean).length;
+  const remainder = words.slice(consumedWords);
+
+  if (remainder.length > 0) {
+    currentLine = remainder.join(" ");
+  }
+
+  lines.push(currentLine);
+
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+  }
+
+  const truncated = lines.some((line) => ctx.measureText(line).width > maxWidth) ||
+    lines.join(" ").split(/\s+/).filter(Boolean).length < words.length;
+
+  if (truncated) {
+    lines[lines.length - 1] = fitTextWithEllipsis(
+      ctx,
+      lines[lines.length - 1] ?? "",
+      maxWidth,
+    );
+  }
+
+  return lines;
+}
+
+function fitTextWithEllipsis(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string {
+  const ellipsis = "...";
+
+  if (ctx.measureText(text).width <= maxWidth) {
+    return text;
+  }
+
+  let trimmed = text;
+
+  while (trimmed.length > 0 && ctx.measureText(`${trimmed}${ellipsis}`).width > maxWidth) {
+    trimmed = trimmed.slice(0, -1).trimEnd();
+  }
+
+  return `${trimmed}${ellipsis}`;
+}
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  fill: string,
+  stroke?: string,
+  strokeWidth = 1,
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, radius);
+  ctx.arcTo(x + width, y + height, x, y + height, radius);
+  ctx.arcTo(x, y + height, x, y, radius);
+  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = strokeWidth;
+    ctx.stroke();
+  }
+}
+
+function getResolvedThemeColors(): ResolvedThemeColors {
+  const styles = getComputedStyle(document.documentElement);
+
+  return {
+    bg: readCssVariable(styles, "--bg", "#f5efe2"),
+    bgAccent: readCssVariable(styles, "--bg-accent", "rgba(197, 126, 58, 0.18)"),
+    panel: readCssVariable(styles, "--panel", "rgba(255, 251, 245, 0.85)"),
+    panelStrong: readCssVariable(styles, "--panel-strong", "rgba(255, 248, 238, 0.98)"),
+    text: readCssVariable(styles, "--text", "#1f2933"),
+    muted: readCssVariable(styles, "--muted", "#5d6b78"),
+    primary: readCssVariable(styles, "--primary", "#0f766e"),
+    accent: readCssVariable(styles, "--accent", "#d97706"),
+    border: readCssVariable(styles, "--border", "rgba(31, 41, 51, 0.12)"),
+    shadow: extractShadowColor(readCssVariable(styles, "--shadow", "rgba(51, 65, 85, 0.16)")),
+    selectedBorder: readCssVariable(styles, "--selected-border", "rgba(15, 118, 110, 0.45)"),
+    selectedTop: readCssVariable(styles, "--selected-top", "rgba(224, 247, 243, 0.98)"),
+    winningBorder: readCssVariable(styles, "--winning-border", "rgba(217, 119, 6, 0.45)"),
+    winningTop: readCssVariable(styles, "--winning-top", "rgba(255, 242, 214, 0.98)"),
+    accentSoft: "rgba(217, 119, 6, 0.18)",
+  };
+}
+
+function readCssVariable(
+  styles: CSSStyleDeclaration,
+  name: string,
+  fallback: string,
+): string {
+  const value = styles.getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function extractShadowColor(value: string): string {
+  const match = value.match(/(rgba?\([^)]+\)|#[0-9a-fA-F]+)$/);
+  return match?.[1] ?? "rgba(51, 65, 85, 0.16)";
+}
+
+function currentStateLabel(state: BingoState, subject: SubjectRecord): string {
+  return `${state.rawName || state.normalizedName} • ${formatPeriodForDisplay(
+    subject.config.cadence,
+    state.periodKey,
+  )}`;
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  link.click();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+
+      reject(new Error("Failed to create image blob."));
+    }, "image/png");
+  });
+}
+
+function supportsClipboardImageCopy(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.clipboard &&
+    typeof navigator.clipboard.write === "function" &&
+    typeof ClipboardItem !== "undefined"
+  );
+}
+
+function flashButtonLabel(button: HTMLButtonElement, text: string): void {
+  const original = button.textContent || "";
+
+  button.textContent = text;
+
+  window.setTimeout(() => {
+    button.textContent = original;
+  }, 1400);
+}
+
+function slugify(value: string): string {
+  const normalized = value
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "bingo-card";
+}
+
+type ResolvedThemeColors = {
+  bg: string;
+  bgAccent: string;
+  panel: string;
+  panelStrong: string;
+  text: string;
+  muted: string;
+  primary: string;
+  accent: string;
+  border: string;
+  shadow: string;
+  selectedBorder: string;
+  selectedTop: string;
+  winningBorder: string;
+  winningTop: string;
+  accentSoft: string;
+};
 
 function getBingoSummary(
   entries: BingoEntry[],

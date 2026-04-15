@@ -324,6 +324,13 @@ h1 {
   border: 1px solid var(--border);
 }
 
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .board-panel {
   margin-top: 1rem;
   padding: 1.1rem;
