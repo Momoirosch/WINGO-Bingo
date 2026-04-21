@@ -35,6 +35,32 @@ type BingoSummary = {
   winningIds: Set<string>;
 };
 
+type SyncClaim = {
+  playerName: string;
+  subjectTitle: string;
+  periodKey: string;
+  weekKey: string;
+  bingoCount: number;
+  updatedAt: string;
+};
+
+type SyncLeaderboardEntry = {
+  playerName: string;
+  totalBingos: number;
+  claimedCards: number;
+  latestClaimAt: string;
+};
+
+type SyncUiState = {
+  claims: SyncClaim[];
+  leaderboard: SyncLeaderboardEntry[];
+  weekKey: string;
+  isLoading: boolean;
+  isSubmitting: boolean;
+  isUnavailable: boolean;
+  statusMessage: string;
+};
+
 type ThemeMode = "light" | "dark";
 
 type UiRefs = {
@@ -54,6 +80,11 @@ type UiRefs = {
   clearProgressButton: HTMLButtonElement;
   downloadImageButton: HTMLButtonElement;
   copyImageButton: HTMLButtonElement;
+  syncStatus: HTMLElement;
+  syncClaimButton: HTMLButtonElement;
+  syncRefreshButton: HTMLButtonElement;
+  weeklySummaryList: HTMLUListElement;
+  leaderboardList: HTMLUListElement;
   subjectButtons: HTMLButtonElement[];
 };
 
@@ -92,6 +123,15 @@ let activeSubjectId = "";
 let currentState: BingoState | null = null;
 let resizeFrame = 0;
 let ui: UiRefs | null = null;
+let syncState: SyncUiState = {
+  claims: [],
+  leaderboard: [],
+  weekKey: getIsoWeekKey(new Date()),
+  isLoading: false,
+  isSubmitting: false,
+  isUnavailable: false,
+  statusMessage: "Shared sync is loading...",
+};
 
 const themeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -113,6 +153,8 @@ async function init(): Promise<void> {
     wireEvents();
     applyTheme(getPreferredTheme());
     syncSubjectUi();
+    renderSyncPanel();
+    void refreshSyncData();
 
     const rememberedName = loadLastName();
 
@@ -306,6 +348,32 @@ function renderShell(): void {
         <p class="helper" id="helper-text">${escapeHtml(getProgressMessage(initialSubject.config))}</p>
         <div class="board" id="board" aria-live="polite"></div>
       </section>
+
+      <section class="sync-panel">
+        <div class="sync-panel__header">
+          <div>
+            <p class="label">Shared standings</p>
+            <h2>Class sync</h2>
+            <p class="helper sync-panel__helper" id="sync-status">Shared sync is loading...</p>
+          </div>
+          <div class="sync-actions">
+            <button class="button button--primary" id="sync-claim" type="button">Share bingo result</button>
+            <button class="button button--ghost" id="sync-refresh" type="button">Refresh standings</button>
+          </div>
+        </div>
+        <div class="sync-grid">
+          <section class="sync-card">
+            <p class="label">This week</p>
+            <h3>Who scored what</h3>
+            <ul class="sync-list" id="weekly-summary-list"></ul>
+          </section>
+          <section class="sync-card">
+            <p class="label">Overall</p>
+            <h3>Total bingos</h3>
+            <ul class="sync-list" id="leaderboard-list"></ul>
+          </section>
+        </div>
+      </section>
     </main>
   `;
 }
@@ -330,6 +398,11 @@ function getUiRefs(): UiRefs {
     document.querySelector<HTMLButtonElement>("#download-image");
   const copyImageButton =
     document.querySelector<HTMLButtonElement>("#copy-image");
+  const syncStatus = document.querySelector<HTMLElement>("#sync-status");
+  const syncClaimButton = document.querySelector<HTMLButtonElement>("#sync-claim");
+  const syncRefreshButton = document.querySelector<HTMLButtonElement>("#sync-refresh");
+  const weeklySummaryList = document.querySelector<HTMLUListElement>("#weekly-summary-list");
+  const leaderboardList = document.querySelector<HTMLUListElement>("#leaderboard-list");
   const subjectButtons = Array.from(
     document.querySelectorAll<HTMLButtonElement>("[data-subject-id]"),
   );
@@ -350,7 +423,12 @@ function getUiRefs(): UiRefs {
     !board ||
     !clearProgressButton ||
     !downloadImageButton ||
-    !copyImageButton
+    !copyImageButton ||
+    !syncStatus ||
+    !syncClaimButton ||
+    !syncRefreshButton ||
+    !weeklySummaryList ||
+    !leaderboardList
   ) {
     throw new Error("Missing required DOM elements.");
   }
@@ -372,6 +450,11 @@ function getUiRefs(): UiRefs {
     clearProgressButton,
     downloadImageButton,
     copyImageButton,
+    syncStatus,
+    syncClaimButton,
+    syncRefreshButton,
+    weeklySummaryList,
+    leaderboardList,
     subjectButtons,
   };
 }
@@ -413,6 +496,14 @@ function wireEvents(): void {
 
   ui.copyImageButton.addEventListener("click", () => {
     void handleCopyImage();
+  });
+
+  ui.syncClaimButton.addEventListener("click", () => {
+    void submitCurrentClaim();
+  });
+
+  ui.syncRefreshButton.addEventListener("click", () => {
+    void refreshSyncData();
   });
 
   ui.subjectButtons.forEach((button) => {
@@ -492,6 +583,7 @@ function syncSubjectUi(): void {
   });
 
   applySubjectTheme(subject.config.theme, getPreferredTheme());
+  renderSyncPanel();
 }
 
 function buildState(
@@ -604,6 +696,7 @@ function renderState(): void {
   });
 
   scheduleBoardSizing();
+  renderSyncPanel();
 }
 
 function renderEmptyState(message: string): void {
@@ -624,6 +717,224 @@ function renderEmptyState(message: string): void {
   `;
 
   scheduleBoardSizing();
+  renderSyncPanel();
+}
+
+function renderSyncPanel(): void {
+  if (!ui) {
+    return;
+  }
+
+  const summary = getCurrentSummary();
+  const claimCount = summary?.count ?? 0;
+  const canSubmitClaim =
+    !!currentState &&
+    claimCount > 0 &&
+    !syncState.isSubmitting &&
+    !syncState.isUnavailable;
+
+  ui.syncStatus.textContent = syncState.statusMessage;
+  ui.syncClaimButton.disabled = !canSubmitClaim;
+  ui.syncRefreshButton.disabled = syncState.isLoading || syncState.isSubmitting;
+
+  if (syncState.isSubmitting) {
+    ui.syncClaimButton.textContent = "Saving...";
+  } else if (claimCount > 0) {
+    ui.syncClaimButton.textContent = `Share ${claimCount} bingo${claimCount === 1 ? "" : "s"}`;
+  } else {
+    ui.syncClaimButton.textContent = "Share bingo result";
+  }
+
+  ui.syncRefreshButton.textContent = syncState.isLoading ? "Refreshing..." : "Refresh standings";
+  ui.weeklySummaryList.innerHTML = renderWeeklySummaryItems();
+  ui.leaderboardList.innerHTML = renderLeaderboardItems();
+}
+
+function renderWeeklySummaryItems(): string {
+  if (syncState.claims.length === 0) {
+    return `
+      <li class="sync-item sync-item--empty">
+        <span class="sync-title">No shared bingos yet for ${escapeHtml(formatWeekKeyForDisplay(syncState.weekKey))}.</span>
+        <span class="sync-meta">The first shared result will show up here.</span>
+      </li>
+    `;
+  }
+
+  return syncState.claims
+    .map((claim) => {
+      const countLabel = `${claim.bingoCount} bingo${claim.bingoCount === 1 ? "" : "s"}`;
+
+      return `
+        <li class="sync-item">
+          <div>
+            <span class="sync-title">${escapeHtml(claim.playerName)}</span>
+            <span class="sync-meta">${escapeHtml(claim.subjectTitle)} • ${escapeHtml(formatPeriodLabel(claim.periodKey))}</span>
+          </div>
+          <strong class="sync-badge">${escapeHtml(countLabel)}</strong>
+        </li>
+      `;
+    })
+    .join("");
+}
+
+function renderLeaderboardItems(): string {
+  if (syncState.leaderboard.length === 0) {
+    return `
+      <li class="sync-item sync-item--empty">
+        <span class="sync-title">No overall leaderboard yet.</span>
+        <span class="sync-meta">Shared claims will build the totals automatically.</span>
+      </li>
+    `;
+  }
+
+  return syncState.leaderboard
+    .map((entry, index) => {
+      const cardLabel = `${entry.claimedCards} card${entry.claimedCards === 1 ? "" : "s"}`;
+
+      return `
+        <li class="sync-item">
+          <div>
+            <span class="sync-title">${index + 1}. ${escapeHtml(entry.playerName)}</span>
+            <span class="sync-meta">${escapeHtml(cardLabel)} shared</span>
+          </div>
+          <strong class="sync-badge">${entry.totalBingos}</strong>
+        </li>
+      `;
+    })
+    .join("");
+}
+
+function getCurrentSummary(): BingoSummary | null {
+  if (!currentState) {
+    return null;
+  }
+
+  const subject = subjectMap.get(currentState.subjectId);
+
+  if (!subject) {
+    return null;
+  }
+
+  return getBingoSummary(
+    currentState.entries,
+    currentState.selectedIds,
+    subject.config.cardSize,
+  );
+}
+
+async function refreshSyncData(): Promise<void> {
+  syncState = {
+    ...syncState,
+    weekKey: getIsoWeekKey(new Date()),
+    isLoading: true,
+    statusMessage: "Loading shared standings...",
+  };
+  renderSyncPanel();
+
+  try {
+    const weekKey = getIsoWeekKey(new Date());
+    const [weeklyResponse, leaderboardResponse] = await Promise.all([
+      fetch(`/api/weekly-summary?weekKey=${encodeURIComponent(weekKey)}`, {
+        cache: "no-store",
+      }),
+      fetch("/api/leaderboard", {
+        cache: "no-store",
+      }),
+    ]);
+
+    if (!weeklyResponse.ok) {
+      throw new Error(`Weekly summary request failed (${weeklyResponse.status}).`);
+    }
+
+    if (!leaderboardResponse.ok) {
+      throw new Error(`Leaderboard request failed (${leaderboardResponse.status}).`);
+    }
+
+    const weeklyData = await weeklyResponse.json() as {
+      weekKey?: string;
+      claims?: SyncClaim[];
+    };
+    const leaderboardData = await leaderboardResponse.json() as {
+      leaderboard?: SyncLeaderboardEntry[];
+    };
+
+    syncState = {
+      ...syncState,
+      claims: Array.isArray(weeklyData.claims) ? weeklyData.claims : [],
+      leaderboard: Array.isArray(leaderboardData.leaderboard) ? leaderboardData.leaderboard : [],
+      weekKey: typeof weeklyData.weekKey === "string" ? weeklyData.weekKey : weekKey,
+      isLoading: false,
+      isUnavailable: false,
+      statusMessage: `Shared sync is live for ${formatWeekKeyForDisplay(typeof weeklyData.weekKey === "string" ? weeklyData.weekKey : weekKey)}.`,
+    };
+  } catch {
+    syncState = {
+      ...syncState,
+      isLoading: false,
+      isUnavailable: true,
+      statusMessage: "Shared sync server unavailable. Local bingo still works.",
+    };
+  }
+
+  renderSyncPanel();
+}
+
+async function submitCurrentClaim(): Promise<void> {
+  if (!currentState) {
+    return;
+  }
+
+  const summary = getCurrentSummary();
+  const subject = subjectMap.get(currentState.subjectId);
+
+  if (!summary || !subject || summary.count < 1) {
+    return;
+  }
+
+  syncState = {
+    ...syncState,
+    isSubmitting: true,
+    statusMessage: `Saving ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${currentState.rawName || currentState.normalizedName}...`,
+  };
+  renderSyncPanel();
+
+  try {
+    const response = await fetch("/api/claims", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        playerName: currentState.rawName || currentState.normalizedName,
+        subjectId: subject.id,
+        subjectTitle: subject.config.title,
+        periodKey: currentState.periodKey,
+        weekKey: getIsoWeekKey(new Date()),
+        bingoCount: summary.count,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Claim save failed (${response.status}).`);
+    }
+
+    await refreshSyncData();
+    syncState = {
+      ...syncState,
+      isSubmitting: false,
+      isUnavailable: false,
+      statusMessage: `Saved ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${currentState.rawName || currentState.normalizedName}.`,
+    };
+  } catch {
+    syncState = {
+      ...syncState,
+      isSubmitting: false,
+      isUnavailable: true,
+      statusMessage: "Could not save the shared bingo result right now.",
+    };
+  }
+
+  renderSyncPanel();
 }
 
 function scheduleBoardSizing(): void {
@@ -1424,6 +1735,22 @@ function formatPeriodForDisplay(cadence: SubjectCadence, periodKey: string): str
   }
 
   return `${day}-${month}-${year}`;
+}
+
+function formatWeekKeyForDisplay(weekKey: string): string {
+  const match = /^(\d{4})-W(\d{2})$/.exec(weekKey);
+
+  if (!match) {
+    return weekKey;
+  }
+
+  return `Week ${match[2]}, ${match[1]}`;
+}
+
+function formatPeriodLabel(periodKey: string): string {
+  return periodKey.includes("-W")
+    ? formatWeekKeyForDisplay(periodKey)
+    : formatPeriodForDisplay("daily", periodKey);
 }
 
 function getIsoWeekKey(date: Date): string {

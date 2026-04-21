@@ -1,9 +1,11 @@
 import { watch } from "node:fs";
+import { join } from "node:path";
 
 import { buildSite } from "./build-lib";
+import { startAppServer } from "./server-lib";
 
 const port = 4173;
-const distDir = `${process.cwd()}\\dist`;
+const distDir = join(process.cwd(), "dist");
 const watchTargets = ["src", "public"];
 
 let isBuilding = false;
@@ -12,30 +14,7 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 await runBuild();
 
-const server = Bun.serve({
-  port,
-  async fetch(request) {
-    const url = new URL(request.url);
-    let pathname = decodeURIComponent(url.pathname);
-
-    if (pathname === "/") {
-      pathname = "/index.html";
-    }
-
-    const file = Bun.file(`${distDir}${pathname}`);
-
-    if (await file.exists()) {
-      return new Response(file);
-    }
-
-    const fallback = Bun.file(`${distDir}\\index.html`);
-    return new Response(fallback, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-      },
-    });
-  },
-});
+const server = startAppServer({ distDir, port });
 
 for (const target of watchTargets) {
   watch(
