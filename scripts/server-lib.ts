@@ -87,6 +87,13 @@ const upsertClaimStatement = db.prepare(`
     updated_at = CURRENT_TIMESTAMP
 `);
 
+const deleteClaimStatement = db.prepare(`
+  DELETE FROM claims
+  WHERE player_name_normalized = ?
+    AND subject_id = ?
+    AND period_key = ?
+`);
+
 const selectWeeklyClaimsStatement = db.query<ClaimRow, [string]>(`
   SELECT
     player_name AS playerName,
@@ -173,22 +180,30 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
       const weekKey = sanitizeWeekKey(payload.weekKey) ?? getIsoWeekKey(new Date());
       const bingoCount = sanitizeBingoCount(payload.bingoCount);
 
-      upsertClaimStatement.run(
-        playerName,
-        playerNameNormalized,
-        subjectId,
-        subjectTitle,
-        periodKey,
-        weekKey,
-        bingoCount,
-      );
+      if (bingoCount === 0) {
+        deleteClaimStatement.run(
+          playerNameNormalized,
+          subjectId,
+          periodKey,
+        );
+      } else {
+        upsertClaimStatement.run(
+          playerName,
+          playerNameNormalized,
+          subjectId,
+          subjectTitle,
+          periodKey,
+          weekKey,
+          bingoCount,
+        );
+      }
 
       const claims = selectWeeklyClaimsStatement.all(weekKey);
 
       return jsonResponse(
         {
           ok: true,
-          message: "Claim saved.",
+          message: bingoCount === 0 ? "Claim removed." : "Claim saved.",
           weekKey,
           claims,
         },
@@ -365,13 +380,13 @@ function sanitizeBingoCount(value: unknown): number {
   if (
     typeof value !== "number" ||
     !Number.isInteger(value) ||
-    value < 1 ||
+    value < 0 ||
     value > 12
   ) {
     throw new Response(
       JSON.stringify({
         ok: false,
-        message: "bingoCount must be an integer between 1 and 12.",
+        message: "bingoCount must be an integer between 0 and 12.",
       }),
       {
         status: 400,

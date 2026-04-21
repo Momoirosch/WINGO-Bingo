@@ -123,6 +123,8 @@ let activeSubjectId = "";
 let currentState: BingoState | null = null;
 let resizeFrame = 0;
 let ui: UiRefs | null = null;
+let syncRequestToken = 0;
+let syncDebounceTimer = 0;
 let syncState: SyncUiState = {
   claims: [],
   leaderboard: [],
@@ -166,6 +168,7 @@ async function init(): Promise<void> {
         getCurrentSubject(),
       );
       renderState();
+      scheduleClaimSync();
       return;
     }
 
@@ -357,7 +360,7 @@ function renderShell(): void {
             <p class="helper sync-panel__helper" id="sync-status">Shared sync is loading...</p>
           </div>
           <div class="sync-actions">
-            <button class="button button--primary" id="sync-claim" type="button">Share bingo result</button>
+            <button class="button button--primary" id="sync-claim" type="button">Auto sync on</button>
             <button class="button button--ghost" id="sync-refresh" type="button">Refresh standings</button>
           </div>
         </div>
@@ -478,6 +481,7 @@ function wireEvents(): void {
     currentState = buildState(rawName, normalizedName, getCurrentSubject());
     persistLastName(rawName);
     renderState();
+    scheduleClaimSync();
   });
 
   ui.clearProgressButton.addEventListener("click", () => {
@@ -488,6 +492,7 @@ function wireEvents(): void {
     currentState.selectedIds.clear();
     persistSelections(currentState);
     renderState();
+    scheduleClaimSync();
   });
 
   ui.downloadImageButton.addEventListener("click", () => {
@@ -499,7 +504,7 @@ function wireEvents(): void {
   });
 
   ui.syncClaimButton.addEventListener("click", () => {
-    void submitCurrentClaim();
+    void syncCurrentClaim(true);
   });
 
   ui.syncRefreshButton.addEventListener("click", () => {
@@ -554,6 +559,7 @@ function setActiveSubject(subjectId: string): void {
 
   currentState = buildState(rawName, normalizedName, getCurrentSubject());
   renderState();
+  scheduleClaimSync();
 }
 
 function syncSubjectUi(): void {
@@ -690,6 +696,7 @@ function renderState(): void {
 
       persistSelections(currentState);
       renderState();
+      scheduleClaimSync();
     });
 
     ui?.board.appendChild(cell);
@@ -727,22 +734,23 @@ function renderSyncPanel(): void {
 
   const summary = getCurrentSummary();
   const claimCount = summary?.count ?? 0;
-  const canSubmitClaim =
+  const canSyncNow =
     !!currentState &&
-    claimCount > 0 &&
     !syncState.isSubmitting &&
     !syncState.isUnavailable;
 
   ui.syncStatus.textContent = syncState.statusMessage;
-  ui.syncClaimButton.disabled = !canSubmitClaim;
+  ui.syncClaimButton.disabled = !canSyncNow;
   ui.syncRefreshButton.disabled = syncState.isLoading || syncState.isSubmitting;
 
   if (syncState.isSubmitting) {
-    ui.syncClaimButton.textContent = "Saving...";
+    ui.syncClaimButton.textContent = "Syncing...";
   } else if (claimCount > 0) {
-    ui.syncClaimButton.textContent = `Share ${claimCount} bingo${claimCount === 1 ? "" : "s"}`;
+    ui.syncClaimButton.textContent = `Sync ${claimCount} bingo${claimCount === 1 ? "" : "s"}`;
+  } else if (currentState) {
+    ui.syncClaimButton.textContent = "Sync cleared state";
   } else {
-    ui.syncClaimButton.textContent = "Share bingo result";
+    ui.syncClaimButton.textContent = "Auto sync on";
   }
 
   ui.syncRefreshButton.textContent = syncState.isLoading ? "Refreshing..." : "Refresh standings";
@@ -879,22 +887,43 @@ async function refreshSyncData(): Promise<void> {
   renderSyncPanel();
 }
 
-async function submitCurrentClaim(): Promise<void> {
+function scheduleClaimSync(): void {
+  if (!currentState) {
+    return;
+  }
+
+  if (syncDebounceTimer !== 0) {
+    window.clearTimeout(syncDebounceTimer);
+  }
+
+  syncDebounceTimer = window.setTimeout(() => {
+    syncDebounceTimer = 0;
+    void syncCurrentClaim(false);
+  }, 350);
+}
+
+async function syncCurrentClaim(showSuccessMessage: boolean): Promise<void> {
   if (!currentState) {
     return;
   }
 
   const summary = getCurrentSummary();
   const subject = subjectMap.get(currentState.subjectId);
+  const playerName = currentState.rawName || currentState.normalizedName;
 
-  if (!summary || !subject || summary.count < 1) {
+  if (!summary || !subject) {
     return;
   }
+
+  const token = syncRequestToken + 1;
+  syncRequestToken = token;
 
   syncState = {
     ...syncState,
     isSubmitting: true,
-    statusMessage: `Saving ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${currentState.rawName || currentState.normalizedName}...`,
+    statusMessage: summary.count > 0
+      ? `Syncing ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${playerName}...`
+      : `Removing live bingo claim for ${playerName}...`,
   };
   renderSyncPanel();
 
@@ -905,7 +934,7 @@ async function submitCurrentClaim(): Promise<void> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        playerName: currentState.rawName || currentState.normalizedName,
+        playerName,
         subjectId: subject.id,
         subjectTitle: subject.config.title,
         periodKey: currentState.periodKey,
@@ -919,18 +948,31 @@ async function submitCurrentClaim(): Promise<void> {
     }
 
     await refreshSyncData();
+
+    if (token !== syncRequestToken) {
+      return;
+    }
+
     syncState = {
       ...syncState,
       isSubmitting: false,
       isUnavailable: false,
-      statusMessage: `Saved ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${currentState.rawName || currentState.normalizedName}.`,
+      statusMessage: showSuccessMessage
+        ? summary.count > 0
+          ? `Synced ${summary.count} bingo${summary.count === 1 ? "" : "s"} for ${playerName}.`
+          : `Removed the live bingo claim for ${playerName}.`
+        : syncState.statusMessage,
     };
   } catch {
+    if (token !== syncRequestToken) {
+      return;
+    }
+
     syncState = {
       ...syncState,
       isSubmitting: false,
       isUnavailable: true,
-      statusMessage: "Could not save the shared bingo result right now.",
+      statusMessage: "Could not sync the live bingo state right now.",
     };
   }
 
@@ -994,6 +1036,40 @@ function updateBoardSizing(): void {
   ui.board.style.setProperty("--board-size", `${boardSize}px`);
   ui.board.style.setProperty("--cell-font-size", `${cellFontSize}px`);
   ui.board.style.setProperty("--board-columns", String(cardSize));
+  fitBoardCellText(cellFontSize, window.innerWidth <= 820 ? 8 : 10);
+}
+
+function fitBoardCellText(baseFontSize: number, minFontSize: number): void {
+  if (!ui) {
+    return;
+  }
+
+  const cells = Array.from(
+    ui.board.querySelectorAll<HTMLButtonElement>(".cell"),
+  );
+
+  for (const cell of cells) {
+    const textElement = cell.querySelector<HTMLElement>(".cell-text");
+
+    if (!textElement) {
+      continue;
+    }
+
+    textElement.style.fontSize = "";
+    let nextFontSize = baseFontSize;
+    textElement.style.fontSize = `${nextFontSize}px`;
+
+    while (
+      nextFontSize > minFontSize &&
+      (
+        textElement.scrollHeight > cell.clientHeight - 8 ||
+        textElement.scrollWidth > cell.clientWidth - 8
+      )
+    ) {
+      nextFontSize -= 1;
+      textElement.style.fontSize = `${nextFontSize}px`;
+    }
+  }
 }
 
 function getPreferredTheme(): ThemeMode {
