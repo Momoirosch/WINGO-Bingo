@@ -1,6 +1,7 @@
 # WINGO-Bingo
 
-A small GitHub Pages bingo app that discovers its subjects from JSON files.
+A small GitHub Pages bingo app that discovers its subjects from JSON files and
+can sync shared bingo claims through Supabase.
 Each subject can choose:
 
 - `daily` or `weekly`
@@ -15,6 +16,7 @@ Each subject can choose:
 - The app combines that value with the current day or ISO week, depending on the subject.
 - A deterministic shuffle picks the required number of prompts from that subject's card list.
 - Clicking fields marks progress and saves it locally in the browser for that exact subject, name, and day or week.
+- When Supabase is configured, live bingo counts can also sync across players.
 
 ## Adding a new bingo subject
 
@@ -104,6 +106,20 @@ To test locally:
 2. Run `bun run build`
 3. Run `bun run preview`
 4. Open `http://localhost:4173`
+
+## Supabase sync
+
+To enable shared sync on GitHub Pages:
+
+1. Create a Supabase project.
+2. Create the `bingo_claims` table and policies in the SQL Editor.
+3. Edit [public/supabase-config.js](/C:/Users/momoi/Documents/Obsidian/Main/Zhaw/S4/wing%20bingo/WINGO-Bingo/public/supabase-config.js:1) with:
+   - your project URL
+   - your publishable key
+4. Push the repository to GitHub Pages.
+
+The publishable key is safe to expose in the frontend. Do not use a secret key
+in the browser.
 
 ## GitHub Pages
 

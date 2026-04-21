@@ -5,6 +5,60 @@ import {
   validateSubjectConfig,
 } from "./subject-schema";
 
+type SupabaseDatabaseClient = {
+  select(columns?: string): SupabaseQueryBuilder;
+  upsert(values: Record<string, unknown>, options?: { onConflict?: string }): Promise<{ error: SupabaseError | null }>;
+  delete(): SupabaseFilterBuilder;
+};
+
+type SupabaseFilterBuilder = SupabaseQueryBuilder & {
+  eq(column: string, value: string): SupabaseFilterBuilder;
+};
+
+type SupabaseQueryBuilder = SupabaseFilterBuilder & {
+  order(column: string, options?: { ascending?: boolean }): Promise<{ data: unknown[] | null; error: SupabaseError | null }>;
+  then: Promise<{ data: unknown[] | null; error: SupabaseError | null }>["then"];
+};
+
+type SupabaseChannel = {
+  on(
+    event: "postgres_changes",
+    filter: {
+      event: "*" | "INSERT" | "UPDATE" | "DELETE";
+      schema: string;
+      table: string;
+    },
+    callback: (_payload: unknown) => void,
+  ): SupabaseChannel;
+  subscribe(): SupabaseChannel;
+};
+
+type SupabaseClient = {
+  from(table: string): SupabaseDatabaseClient;
+  channel(name: string): SupabaseChannel;
+  removeChannel(channel: SupabaseChannel): void;
+};
+
+type SupabaseBrowser = {
+  createClient(url: string, publishableKey: string): SupabaseClient;
+};
+
+type SupabaseError = {
+  message: string;
+};
+
+type SupabaseConfig = {
+  url: string;
+  publishableKey: string;
+};
+
+declare global {
+  interface Window {
+    supabase?: SupabaseBrowser;
+    __SUPABASE_CONFIG__?: Partial<SupabaseConfig>;
+  }
+}
+
 type SubjectManifestEntry = {
   id: string;
   path: string;
@@ -80,9 +134,6 @@ type UiRefs = {
   clearProgressButton: HTMLButtonElement;
   downloadImageButton: HTMLButtonElement;
   copyImageButton: HTMLButtonElement;
-  syncStatus: HTMLElement;
-  syncClaimButton: HTMLButtonElement;
-  syncRefreshButton: HTMLButtonElement;
   weeklySummaryList: HTMLUListElement;
   leaderboardList: HTMLUListElement;
   subjectButtons: HTMLButtonElement[];
@@ -125,13 +176,15 @@ let resizeFrame = 0;
 let ui: UiRefs | null = null;
 let syncRequestToken = 0;
 let syncDebounceTimer = 0;
+let supabaseClient: SupabaseClient | null = null;
+let syncChannel: SupabaseChannel | null = null;
 let syncState: SyncUiState = {
   claims: [],
   leaderboard: [],
   weekKey: getIsoWeekKey(new Date()),
   isLoading: false,
   isSubmitting: false,
-  isUnavailable: false,
+  isUnavailable: !hasSupabaseConfig(),
   statusMessage: "Shared sync is loading...",
 };
 
@@ -156,6 +209,7 @@ async function init(): Promise<void> {
     applyTheme(getPreferredTheme());
     syncSubjectUi();
     renderSyncPanel();
+    initializeSupabaseSync();
     void refreshSyncData();
 
     const rememberedName = loadLastName();
@@ -220,6 +274,36 @@ async function fetchJson(url: string): Promise<unknown> {
   }
 
   return response.json();
+}
+
+function initializeSupabaseSync(): void {
+  const config = getSupabaseConfig();
+
+  if (!config || !window.supabase) {
+    syncState = {
+      ...syncState,
+      isUnavailable: true,
+      statusMessage: "Supabase sync is not configured yet. Add your project URL and publishable key in supabase-config.js.",
+    };
+    renderSyncPanel();
+    return;
+  }
+
+  supabaseClient = window.supabase.createClient(config.url, config.publishableKey);
+  syncChannel = supabaseClient
+    .channel("bingo-claims-live")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "bingo_claims",
+      },
+      () => {
+        void refreshSyncData();
+      },
+    )
+    .subscribe();
 }
 
 function validateManifestEntry(entry: unknown, index: number): asserts entry is SubjectManifestEntry {
@@ -331,6 +415,21 @@ function renderShell(): void {
         </form>
       </section>
 
+      <section class="sync-panel">
+        <div class="sync-grid sync-grid--compact">
+          <section class="sync-card">
+            <p class="label">This week</p>
+            <h3>Who scored what</h3>
+            <ul class="sync-list" id="weekly-summary-list"></ul>
+          </section>
+          <section class="sync-card">
+            <p class="label">Overall</p>
+            <h3>Total bingos</h3>
+            <ul class="sync-list" id="leaderboard-list"></ul>
+          </section>
+        </div>
+      </section>
+
       <section class="board-panel">
         <div class="board-header">
           <div>
@@ -350,32 +449,6 @@ function renderShell(): void {
         </div>
         <p class="helper" id="helper-text">${escapeHtml(getProgressMessage(initialSubject.config))}</p>
         <div class="board" id="board" aria-live="polite"></div>
-      </section>
-
-      <section class="sync-panel">
-        <div class="sync-panel__header">
-          <div>
-            <p class="label">Shared standings</p>
-            <h2>Class sync</h2>
-            <p class="helper sync-panel__helper" id="sync-status">Shared sync is loading...</p>
-          </div>
-          <div class="sync-actions">
-            <button class="button button--primary" id="sync-claim" type="button">Auto sync on</button>
-            <button class="button button--ghost" id="sync-refresh" type="button">Refresh standings</button>
-          </div>
-        </div>
-        <div class="sync-grid">
-          <section class="sync-card">
-            <p class="label">This week</p>
-            <h3>Who scored what</h3>
-            <ul class="sync-list" id="weekly-summary-list"></ul>
-          </section>
-          <section class="sync-card">
-            <p class="label">Overall</p>
-            <h3>Total bingos</h3>
-            <ul class="sync-list" id="leaderboard-list"></ul>
-          </section>
-        </div>
       </section>
     </main>
   `;
@@ -401,9 +474,6 @@ function getUiRefs(): UiRefs {
     document.querySelector<HTMLButtonElement>("#download-image");
   const copyImageButton =
     document.querySelector<HTMLButtonElement>("#copy-image");
-  const syncStatus = document.querySelector<HTMLElement>("#sync-status");
-  const syncClaimButton = document.querySelector<HTMLButtonElement>("#sync-claim");
-  const syncRefreshButton = document.querySelector<HTMLButtonElement>("#sync-refresh");
   const weeklySummaryList = document.querySelector<HTMLUListElement>("#weekly-summary-list");
   const leaderboardList = document.querySelector<HTMLUListElement>("#leaderboard-list");
   const subjectButtons = Array.from(
@@ -427,9 +497,6 @@ function getUiRefs(): UiRefs {
     !clearProgressButton ||
     !downloadImageButton ||
     !copyImageButton ||
-    !syncStatus ||
-    !syncClaimButton ||
-    !syncRefreshButton ||
     !weeklySummaryList ||
     !leaderboardList
   ) {
@@ -453,9 +520,6 @@ function getUiRefs(): UiRefs {
     clearProgressButton,
     downloadImageButton,
     copyImageButton,
-    syncStatus,
-    syncClaimButton,
-    syncRefreshButton,
     weeklySummaryList,
     leaderboardList,
     subjectButtons,
@@ -501,14 +565,6 @@ function wireEvents(): void {
 
   ui.copyImageButton.addEventListener("click", () => {
     void handleCopyImage();
-  });
-
-  ui.syncClaimButton.addEventListener("click", () => {
-    void syncCurrentClaim(true);
-  });
-
-  ui.syncRefreshButton.addEventListener("click", () => {
-    void refreshSyncData();
   });
 
   ui.subjectButtons.forEach((button) => {
@@ -732,33 +788,20 @@ function renderSyncPanel(): void {
     return;
   }
 
-  const summary = getCurrentSummary();
-  const claimCount = summary?.count ?? 0;
-  const canSyncNow =
-    !!currentState &&
-    !syncState.isSubmitting &&
-    !syncState.isUnavailable;
-
-  ui.syncStatus.textContent = syncState.statusMessage;
-  ui.syncClaimButton.disabled = !canSyncNow;
-  ui.syncRefreshButton.disabled = syncState.isLoading || syncState.isSubmitting;
-
-  if (syncState.isSubmitting) {
-    ui.syncClaimButton.textContent = "Syncing...";
-  } else if (claimCount > 0) {
-    ui.syncClaimButton.textContent = `Sync ${claimCount} bingo${claimCount === 1 ? "" : "s"}`;
-  } else if (currentState) {
-    ui.syncClaimButton.textContent = "Sync cleared state";
-  } else {
-    ui.syncClaimButton.textContent = "Auto sync on";
-  }
-
-  ui.syncRefreshButton.textContent = syncState.isLoading ? "Refreshing..." : "Refresh standings";
   ui.weeklySummaryList.innerHTML = renderWeeklySummaryItems();
   ui.leaderboardList.innerHTML = renderLeaderboardItems();
 }
 
 function renderWeeklySummaryItems(): string {
+  if (syncState.isUnavailable) {
+    return `
+      <li class="sync-item sync-item--empty">
+        <span class="sync-title">Sync is unavailable right now.</span>
+        <span class="sync-meta">Check your Supabase config and then reload the page.</span>
+      </li>
+    `;
+  }
+
   if (syncState.claims.length === 0) {
     return `
       <li class="sync-item sync-item--empty">
@@ -786,6 +829,15 @@ function renderWeeklySummaryItems(): string {
 }
 
 function renderLeaderboardItems(): string {
+  if (syncState.isUnavailable) {
+    return `
+      <li class="sync-item sync-item--empty">
+        <span class="sync-title">Overall totals unavailable.</span>
+        <span class="sync-meta">Supabase could not be reached from this page.</span>
+      </li>
+    `;
+  }
+
   if (syncState.leaderboard.length === 0) {
     return `
       <li class="sync-item sync-item--empty">
@@ -831,6 +883,17 @@ function getCurrentSummary(): BingoSummary | null {
 }
 
 async function refreshSyncData(): Promise<void> {
+  if (!supabaseClient) {
+    syncState = {
+      ...syncState,
+      isLoading: false,
+      isUnavailable: true,
+      statusMessage: "Supabase sync is not configured yet. Add your project URL and publishable key in supabase-config.js.",
+    };
+    renderSyncPanel();
+    return;
+  }
+
   syncState = {
     ...syncState,
     weekKey: getIsoWeekKey(new Date()),
@@ -841,39 +904,36 @@ async function refreshSyncData(): Promise<void> {
 
   try {
     const weekKey = getIsoWeekKey(new Date());
-    const [weeklyResponse, leaderboardResponse] = await Promise.all([
-      fetch(`/api/weekly-summary?weekKey=${encodeURIComponent(weekKey)}`, {
-        cache: "no-store",
-      }),
-      fetch("/api/leaderboard", {
-        cache: "no-store",
-      }),
+    const [weeklyResult, leaderboardResult] = await Promise.all([
+      supabaseClient
+        .from("bingo_claims")
+        .select("player_name, subject_title, period_key, week_key, bingo_count, updated_at")
+        .eq("week_key", weekKey)
+        .order("bingo_count", { ascending: false }),
+      supabaseClient
+        .from("bingo_claims")
+        .select("player_name, bingo_count, updated_at"),
     ]);
 
-    if (!weeklyResponse.ok) {
-      throw new Error(`Weekly summary request failed (${weeklyResponse.status}).`);
+    if (weeklyResult.error) {
+      throw new Error(weeklyResult.error.message);
     }
 
-    if (!leaderboardResponse.ok) {
-      throw new Error(`Leaderboard request failed (${leaderboardResponse.status}).`);
+    if (leaderboardResult.error) {
+      throw new Error(leaderboardResult.error.message);
     }
 
-    const weeklyData = await weeklyResponse.json() as {
-      weekKey?: string;
-      claims?: SyncClaim[];
-    };
-    const leaderboardData = await leaderboardResponse.json() as {
-      leaderboard?: SyncLeaderboardEntry[];
-    };
+    const claims = mapClaims(weeklyResult.data ?? []);
+    const leaderboard = buildLeaderboard(leaderboardResult.data ?? []);
 
     syncState = {
       ...syncState,
-      claims: Array.isArray(weeklyData.claims) ? weeklyData.claims : [],
-      leaderboard: Array.isArray(leaderboardData.leaderboard) ? leaderboardData.leaderboard : [],
-      weekKey: typeof weeklyData.weekKey === "string" ? weeklyData.weekKey : weekKey,
+      claims,
+      leaderboard,
+      weekKey: weekKey,
       isLoading: false,
       isUnavailable: false,
-      statusMessage: `Shared sync is live for ${formatWeekKeyForDisplay(typeof weeklyData.weekKey === "string" ? weeklyData.weekKey : weekKey)}.`,
+      statusMessage: `Shared sync is live for ${formatWeekKeyForDisplay(weekKey)}.`,
     };
   } catch {
     syncState = {
@@ -903,7 +963,7 @@ function scheduleClaimSync(): void {
 }
 
 async function syncCurrentClaim(showSuccessMessage: boolean): Promise<void> {
-  if (!currentState) {
+  if (!currentState || !supabaseClient) {
     return;
   }
 
@@ -928,23 +988,40 @@ async function syncCurrentClaim(showSuccessMessage: boolean): Promise<void> {
   renderSyncPanel();
 
   try {
-    const response = await fetch("/api/claims", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        playerName,
-        subjectId: subject.id,
-        subjectTitle: subject.config.title,
-        periodKey: currentState.periodKey,
-        weekKey: getIsoWeekKey(new Date()),
-        bingoCount: summary.count,
-      }),
-    });
+    const playerNameNormalized = normalizeName(playerName);
 
-    if (!response.ok) {
-      throw new Error(`Claim save failed (${response.status}).`);
+    if (summary.count === 0) {
+      const { error } = await supabaseClient
+        .from("bingo_claims")
+        .delete()
+        .eq("player_name_normalized", playerNameNormalized)
+        .eq("subject_id", subject.id)
+        .eq("period_key", currentState.periodKey);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+    } else {
+      const { error } = await supabaseClient
+        .from("bingo_claims")
+        .upsert(
+          {
+            player_name: playerName,
+            player_name_normalized: playerNameNormalized,
+            subject_id: subject.id,
+            subject_title: subject.config.title,
+            period_key: currentState.periodKey,
+            week_key: getIsoWeekKey(new Date()),
+            bingo_count: summary.count,
+          },
+          {
+            onConflict: "player_name_normalized,subject_id,period_key",
+          },
+        );
+
+      if (error) {
+        throw new Error(error.message);
+      }
     }
 
     await refreshSyncData();
@@ -1829,6 +1906,119 @@ function formatPeriodLabel(periodKey: string): string {
     : formatPeriodForDisplay("daily", periodKey);
 }
 
+function hasSupabaseConfig(): boolean {
+  return !!getSupabaseConfig();
+}
+
+function getSupabaseConfig(): SupabaseConfig | null {
+  const config = window.__SUPABASE_CONFIG__;
+
+  if (!config || typeof config.url !== "string" || typeof config.publishableKey !== "string") {
+    return null;
+  }
+
+  const url = config.url.trim();
+  const publishableKey = config.publishableKey.trim();
+
+  if (!url || !publishableKey || url.includes("YOUR_PROJECT") || publishableKey.includes("YOUR_SUPABASE")) {
+    return null;
+  }
+
+  return {
+    url,
+    publishableKey,
+  };
+}
+
+function mapClaims(rows: unknown[]): SyncClaim[] {
+  return rows.flatMap((row) => {
+    if (!isRecord(row)) {
+      return [];
+    }
+
+    const playerName = readString(row.player_name);
+    const subjectTitle = readString(row.subject_title);
+    const periodKey = readString(row.period_key);
+    const weekKey = readString(row.week_key);
+    const updatedAt = readString(row.updated_at);
+    const bingoCount = readNumber(row.bingo_count);
+
+    if (!playerName || !subjectTitle || !periodKey || !weekKey || !updatedAt || bingoCount === null) {
+      return [];
+    }
+
+    return [{
+      playerName,
+      subjectTitle,
+      periodKey,
+      weekKey,
+      updatedAt,
+      bingoCount,
+    }];
+  });
+}
+
+function buildLeaderboard(rows: unknown[]): SyncLeaderboardEntry[] {
+  const byPlayer = new Map<string, SyncLeaderboardEntry>();
+
+  for (const row of rows) {
+    if (!isRecord(row)) {
+      continue;
+    }
+
+    const playerName = readString(row.player_name);
+    const updatedAt = readString(row.updated_at);
+    const bingoCount = readNumber(row.bingo_count);
+
+    if (!playerName || !updatedAt || bingoCount === null) {
+      continue;
+    }
+
+    const key = normalizeName(playerName);
+    const existing = byPlayer.get(key);
+
+    if (existing) {
+      existing.totalBingos += bingoCount;
+      existing.claimedCards += 1;
+
+      if (updatedAt > existing.latestClaimAt) {
+        existing.latestClaimAt = updatedAt;
+      }
+
+      continue;
+    }
+
+    byPlayer.set(key, {
+      playerName,
+      totalBingos: bingoCount,
+      claimedCards: 1,
+      latestClaimAt: updatedAt,
+    });
+  }
+
+  return [...byPlayer.values()].sort((left, right) => {
+    if (right.totalBingos !== left.totalBingos) {
+      return right.totalBingos - left.totalBingos;
+    }
+
+    if (right.latestClaimAt !== left.latestClaimAt) {
+      return right.latestClaimAt.localeCompare(left.latestClaimAt);
+    }
+
+    return left.playerName.localeCompare(right.playerName, undefined, {
+      sensitivity: "base",
+    });
+  });
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
 function getIsoWeekKey(date: Date): string {
   const utcDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
   const day = utcDate.getUTCDay() || 7;
@@ -1883,6 +2073,6 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function isRecord(value: unknown): value is Record<string, string> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
